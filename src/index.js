@@ -18,10 +18,13 @@ import {
 	Button,
 	Spinner,
 	Notice,
-	Icon,
 	TabPanel,
 } from '@wordpress/components';
-import { dispatch, select } from '@wordpress/data';
+import {
+	getBlockType,
+	unregisterBlockType,
+	unstable__bootstrapServerSideBlockDefinitions,
+} from '@wordpress/blocks';
 import apiFetch from '@wordpress/api-fetch';
 
 import './editor.scss';
@@ -30,18 +33,56 @@ import './editor.scss';
 /*  Constants                                                          */
 /* ------------------------------------------------------------------ */
 
-const ICON = (
-	<Icon
-		icon={() => (
-			<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-				<path
-					fill="currentColor"
-					d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"
-				/>
-			</svg>
-		)}
-	/>
-);
+// Dashicon slug — rendered by the registerPlugin / PluginSidebar icon props.
+const ICON = 'hammer';
+
+/**
+ * Feature flag — hot-load newly deployed blocks into the running editor.
+ *
+ * When TRUE: deploying a block dynamically registers it in the live editor so
+ * it appears in the inserter immediately, no page reload required.
+ *
+ * When FALSE: we skip the hot-load and just nudge the user to click
+ * "Reload Editor" (the always-reliable path, since PHP re-enqueues every
+ * block's assets on the next page load).
+ *
+ * The hot-load path depends on wp.blocks.unstable__bootstrapServerSideBlockDefinitions,
+ * an UNSTABLE WordPress API. It has been stable in practice for years, but if a
+ * future WP release breaks it, flip this to false. The "Reload Editor" button
+ * stays available either way, and any hot-load failure falls back to it
+ * automatically.
+ */
+const ENABLE_HOT_RELOAD = true;
+
+/**
+ * Append a <script> tag and resolve once it has loaded. Used to pull a freshly
+ * deployed block's index.js into the running editor so its registerBlockType()
+ * call executes without a page reload.
+ *
+ * @param {string} src Fully-qualified script URL.
+ * @return {Promise<void>} Resolves on load, rejects on error.
+ */
+const injectScript = ( src ) =>
+	new Promise( ( resolve, reject ) => {
+		const tag = document.createElement( 'script' );
+		tag.src = src;
+		tag.onload = resolve;
+		tag.onerror = () => reject( new Error( 'Failed to load ' + src ) );
+		document.head.appendChild( tag );
+	} );
+
+/**
+ * Append a <link rel="stylesheet"> tag. Fire-and-forget — block styles aren't
+ * required for registration, so callers don't await this.
+ *
+ * @param {string} href Fully-qualified stylesheet URL.
+ */
+const injectStyle = ( href ) => {
+	const tag = document.createElement( 'link' );
+	tag.rel = 'stylesheet';
+	tag.href = href;
+	document.head.appendChild( tag );
+};
 
 /* ------------------------------------------------------------------ */
 /*  Main Component                                                     */
@@ -56,12 +97,17 @@ const BlockFoundryPanel = () => {
 	const [ notice, setNotice ]             = useState( null );
 	const [ deployedBlocks, setDeployed ]   = useState( [] );
 	const [ activeTab, setActiveTab ]       = useState( 'generate' );
+	const [ elapsed, setElapsed ]           = useState( 0 );
 	const textareaRef                       = useRef();
+	const timerRef                          = useRef();
 
 	/* ---- Fetch deployed blocks on mount ---- */
 	useEffect( () => {
 		fetchDeployedBlocks();
 	}, [] );
+
+	/* ---- Clear the elapsed-time interval if we unmount mid-generation ---- */
+	useEffect( () => () => clearInterval( timerRef.current ), [] );
 
 	const fetchDeployedBlocks = async () => {
 		try {
@@ -82,6 +128,15 @@ const BlockFoundryPanel = () => {
 		setResponse( null );
 		setParsedBlock( null );
 		setNotice( null );
+
+		// Tick an elapsed-seconds counter for the button. The request is a single
+		// blocking call (no streaming), so elapsed time is the only honest
+		// progress signal we can show while we wait for the full response.
+		setElapsed( 0 );
+		const startedAt = Date.now();
+		timerRef.current = setInterval( () => {
+			setElapsed( Math.floor( ( Date.now() - startedAt ) / 1000 ) );
+		}, 1000 );
 
 		try {
 			const result = await apiFetch( {
@@ -124,6 +179,7 @@ const BlockFoundryPanel = () => {
 				message: err.message || 'Something went wrong talking to the AI.',
 			} );
 		} finally {
+			clearInterval( timerRef.current );
 			setIsLoading( false );
 		}
 	}, [ prompt ] );
@@ -148,8 +204,8 @@ const BlockFoundryPanel = () => {
 					message: `Block "${ result.title }" deployed! Refreshing the editor…`,
 				} );
 
-				// Refresh the block types store so the new block appears in the inserter.
-				await refreshBlockRegistry();
+				// Register the new block in the editor so it appears in the inserter.
+				await refreshBlockRegistry( parsedBlock );
 				await fetchDeployedBlocks();
 			}
 		} catch ( err ) {
@@ -184,29 +240,67 @@ const BlockFoundryPanel = () => {
 		}
 	}, [] );
 
-	/* ---- Refresh the block registry in the editor ---- */
-	const refreshBlockRegistry = async () => {
-		// Force the editor to re-fetch registered block types.
-		// The cleanest way is to reload the page, but we can be smarter:
-		// Dispatch a store invalidation so the inserter picks up new blocks.
-		try {
-			// Invalidate the block-types cache in the core/blocks store.
-			const { invalidateResolutionForStoreSelector } = dispatch( 'core/data' ) || {};
-			if ( invalidateResolutionForStoreSelector ) {
-				invalidateResolutionForStoreSelector( 'core', 'getBlockTypes' );
+	/* ---- Make a freshly deployed block usable in the editor ---- */
+	const refreshBlockRegistry = async ( block ) => {
+		// HOT-LOAD PATH (ENABLE_HOT_RELOAD): register the block in the live
+		// editor so it appears in the inserter immediately. The whole thing is
+		// wrapped in try/catch — any failure falls through to the reload nudge.
+		//
+		// Why this is needed: the inserter is driven by the client-side block
+		// registry (wp.blocks), which is populated only when a block's index.js
+		// runs registerBlockType() in the browser. PHP enqueues that script at
+		// PAGE LOAD, so a just-deployed block's code isn't in the running editor.
+		// We pull it in manually below.
+		if ( ENABLE_HOT_RELOAD && block?.files?.[ 'block.json' ] ) {
+			try {
+				const meta    = JSON.parse( block.files[ 'block.json' ] );
+				const baseUrl = window.bfEditor.pluginUrl + 'generated-blocks/' + block.slug + '/';
+				// Cache-buster so re-deploys load fresh code, not a stale copy.
+				const ver = '?ver=' + Date.now();
+
+				// Re-deploy guard: re-registering an existing block name throws,
+				// so drop any prior client registration from this session first.
+				if ( getBlockType( meta.name ) ) {
+					unregisterBlockType( meta.name );
+				}
+
+				// Hand the block.json metadata (attributes, title, category, …)
+				// to the editor exactly the way a normal page load would. Without
+				// this, the block's index.js — which registers only { edit, save }
+				// — would produce a block with no attributes or title.
+				// NOTE: unstable__ API; see the ENABLE_HOT_RELOAD comment.
+				unstable__bootstrapServerSideBlockDefinitions( { [ meta.name ]: meta } );
+
+				// Styles are non-blocking; the index.js (registerBlockType) is the
+				// one we must await before checking the result.
+				if ( block.files[ 'style.css' ] ) {
+					injectStyle( baseUrl + 'style.css' + ver );
+				}
+				if ( block.files[ 'editor.css' ] ) {
+					injectStyle( baseUrl + 'editor.css' + ver );
+				}
+				await injectScript( baseUrl + 'index.js' + ver );
+
+				// Confirm it actually landed in the registry before declaring success.
+				if ( getBlockType( meta.name ) ) {
+					setNotice( {
+						status: 'success',
+						message: `Block "${ block.title || block.slug }" is ready — find it in the inserter. No reload needed.`,
+					} );
+					return;
+				}
+			} catch ( e ) {
+				// Intentional: drop through to the reload fallback below.
 			}
-		} catch ( e ) {
-			// Fallback: no-op — the user can refresh manually.
 		}
 
-		// Also dispatch a page-level event that we can hook if needed.
+		// FALLBACK PATH (hot-load disabled or failed): nudge a manual reload,
+		// which always works because PHP re-enqueues every block on page load.
 		window.dispatchEvent( new CustomEvent( 'bf-block-deployed' ) );
-
-		// Show a "reload" nudge as a reliable fallback.
 		setNotice( ( prev ) => ( {
 			...( prev || {} ),
 			status: 'success',
-			message: ( prev?.message || 'Block deployed!' ) + ' Click the button below to reload the editor and see it in the inserter.',
+			message: ( prev?.message || 'Block deployed!' ) + ' Click "Reload Editor" below to see it in the inserter.',
 		} ) );
 	};
 
@@ -271,7 +365,7 @@ const BlockFoundryPanel = () => {
 													>
 														{ isLoading ? (
 															<>
-																<Spinner /> Generating…
+																<Spinner /> Generating… { elapsed }s
 															</>
 														) : (
 															'Generate Block'

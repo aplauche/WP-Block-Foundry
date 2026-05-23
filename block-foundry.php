@@ -80,6 +80,9 @@ function bf_enqueue_editor_assets()
 	wp_localize_script('block-foundry-editor', 'bfEditor', array(
 		'restBase'  => esc_url_raw(rest_url(BF_NAMESPACE . '/v1')),
 		'namespace' => BF_NAMESPACE,
+		// Used client-side to hot-load a freshly deployed block's assets
+		// (generated-blocks/<slug>/index.js etc.) without a full page reload.
+		'pluginUrl' => esc_url_raw(BF_PLUGIN_URL),
 	));
 }
 
