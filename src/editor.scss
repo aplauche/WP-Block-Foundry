@@ -1,0 +1,211 @@
+/**
+ * Block Foundry — Editor Sidebar Styles
+ */
+
+.bf-sidebar {
+	padding: 0;
+
+	.components-notice {
+		margin: 8px 12px;
+	}
+}
+
+.bf-tabs {
+	.components-tab-panel__tabs {
+		border-bottom: 1px solid #ddd;
+		padding: 0 12px;
+	}
+
+	.bf-tab {
+		font-weight: 500;
+	}
+}
+
+/* ---- Generate Tab ---- */
+
+.bf-generate-tab {
+	.components-textarea-control__input {
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+		font-size: 13px;
+		line-height: 1.5;
+		min-height: 120px;
+		resize: vertical;
+	}
+
+	.bf-generate-btn {
+		width: 100%;
+		justify-content: center;
+		margin-top: 4px;
+		gap: 6px;
+	}
+}
+
+/* ---- Preview ---- */
+
+.bf-preview-meta {
+	margin-bottom: 12px;
+
+	strong {
+		display: block;
+		font-size: 14px;
+		margin-bottom: 4px;
+	}
+
+	p {
+		color: #666;
+		margin: 0 0 6px;
+		font-size: 12px;
+	}
+
+	code {
+		font-size: 11px;
+		background: #f0f0f0;
+		padding: 2px 6px;
+		border-radius: 3px;
+	}
+}
+
+.bf-file-list {
+	margin-bottom: 12px;
+
+	strong {
+		display: block;
+		margin-bottom: 4px;
+		font-size: 12px;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: #888;
+	}
+
+	ul {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	li {
+		padding: 3px 0;
+
+		code {
+			font-size: 12px;
+			background: #f7f7f7;
+			padding: 2px 6px;
+			border-radius: 3px;
+		}
+	}
+}
+
+.bf-raw-response {
+	margin-bottom: 16px;
+	border: 1px solid #e0e0e0;
+	border-radius: 4px;
+	padding: 0;
+
+	summary {
+		padding: 8px 12px;
+		cursor: pointer;
+		font-size: 12px;
+		font-weight: 500;
+		color: #666;
+		user-select: none;
+
+		&:hover {
+			color: #333;
+		}
+	}
+
+	pre {
+		margin: 0;
+		padding: 12px;
+		font-size: 11px;
+		line-height: 1.4;
+		background: #f9f9f9;
+		border-top: 1px solid #e0e0e0;
+		max-height: 300px;
+		overflow: auto;
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+}
+
+.bf-raw-response-text {
+	font-size: 11px;
+	line-height: 1.4;
+	background: #f9f9f9;
+	padding: 12px;
+	border-radius: 4px;
+	max-height: 400px;
+	overflow: auto;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.bf-deploy-actions {
+	display: flex;
+	gap: 8px;
+	margin-top: 8px;
+
+	.components-button {
+		flex: 1;
+		justify-content: center;
+		gap: 6px;
+	}
+
+	.bf-reload-btn {
+		flex: 0 0 auto;
+	}
+}
+
+/* ---- Blocks Tab ---- */
+
+.bf-blocks-tab {
+	.bf-empty {
+		color: #888;
+		font-style: italic;
+		font-size: 13px;
+	}
+}
+
+.bf-block-list {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.bf-block-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 0;
+	border-bottom: 1px solid #f0f0f0;
+
+	&:last-child {
+		border-bottom: none;
+	}
+}
+
+.bf-block-info {
+	flex: 1;
+
+	strong {
+		display: block;
+		font-size: 13px;
+	}
+
+	code {
+		font-size: 11px;
+		color: #666;
+	}
+
+	.bf-block-date {
+		display: block;
+		font-size: 11px;
+		color: #999;
+		margin-top: 2px;
+	}
+}
+
+.bf-delete-btn {
+	flex-shrink: 0;
+	font-size: 12px !important;
+}

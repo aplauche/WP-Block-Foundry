@@ -1,0 +1,18 @@
+{
+	"name": "block-foundry",
+	"version": "1.0.0",
+	"description": "Generate custom Gutenberg blocks on the fly using Claude AI.",
+	"author": "Anton Plauche",
+	"license": "GPL-2.0-or-later",
+	"main": "build/index.js",
+	"scripts": {
+		"build": "wp-scripts build",
+		"start": "wp-scripts start",
+		"lint:js": "wp-scripts lint-js",
+		"lint:css": "wp-scripts lint-style",
+		"wp:play": "npx @wp-playground/cli@latest start"
+	},
+	"devDependencies": {
+		"@wordpress/scripts": "^30.0.0"
+	}
+}
