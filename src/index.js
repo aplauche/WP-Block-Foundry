@@ -74,16 +74,41 @@ const injectScript = ( src ) =>
 	} );
 
 /**
- * Append a <link rel="stylesheet"> tag. Fire-and-forget — block styles aren't
- * required for registration, so callers don't await this.
+ * Append a <link rel="stylesheet"> to a specific document's <head>.
+ *
+ * @param {Document} doc  Target document (main page or an iframe).
+ * @param {string}   href Fully-qualified stylesheet URL.
+ */
+const appendStyleTo = ( doc, href ) => {
+	const tag = doc.createElement( 'link' );
+	tag.rel = 'stylesheet';
+	tag.href = href;
+	doc.head.appendChild( tag );
+};
+
+/**
+ * Inject a stylesheet so a hot-loaded block's styles apply immediately.
+ *
+ * Fire-and-forget — block styles aren't required for registration, so callers
+ * don't await this.
+ *
+ * Since WP 5.9 the post canvas renders inside an <iframe name="editor-canvas">,
+ * and that iframe's document does NOT inherit <link> tags added to the outer
+ * admin page. So we add the stylesheet to BOTH the main document (covers the
+ * non-iframed case and the inserter previews) and the canvas iframe (covers the
+ * block's edit preview). Without the iframe copy, styles don't show until a full
+ * reload re-enqueues them server-side — which is exactly the bug this avoids.
  *
  * @param {string} href Fully-qualified stylesheet URL.
  */
 const injectStyle = ( href ) => {
-	const tag = document.createElement( 'link' );
-	tag.rel = 'stylesheet';
-	tag.href = href;
-	document.head.appendChild( tag );
+	appendStyleTo( document, href );
+
+	const canvas    = document.querySelector( 'iframe[name="editor-canvas"]' );
+	const canvasDoc = canvas && canvas.contentDocument;
+	if ( canvasDoc && canvasDoc.head ) {
+		appendStyleTo( canvasDoc, href );
+	}
 };
 
 /**
