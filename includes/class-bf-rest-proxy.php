@@ -42,6 +42,17 @@ class BF_REST_Proxy {
 					'type'              => 'string',
 					'sanitize_callback' => 'sanitize_text_field',
 				),
+				// Prior conversation turns, oldest-first. Each item is
+				// { role: 'user'|'assistant', content: '<string>' }. Lets the
+				// user iterate on a generated block — Claude sees the block it
+				// already produced plus the requested edits. Validated in the
+				// handler (NOT via sanitize_text_field, which would mangle the
+				// stored block JSON / render.php markup).
+				'history' => array(
+					'required' => false,
+					'type'     => 'array',
+					'default'  => array(),
+				),
 				'context' => array(
 					'required' => false,
 					'type'     => 'string',
@@ -101,13 +112,14 @@ class BF_REST_Proxy {
 		$user_message = $request->get_param( 'message' );
 		$extra_ctx    = $request->get_param( 'context' );
 		$image        = $request->get_param( 'image' );
+		$history      = $request->get_param( 'history' );
 
 		$system_prompt = self::build_system_prompt( $extra_ctx );
 
-		// Build the user turn content. Text is always present (required); when a
-		// valid reference image was sent, prepend it as a vision block so the
-		// model can see what the user wants. The image is used in-request only —
-		// never written to disk or the media library.
+		// Build the new user turn's content. Text is always present (required);
+		// when a valid reference image was sent, prepend it as a vision block so
+		// the model can see what the user wants. The image is used in-request
+		// only — never written to disk or the media library.
 		$user_content  = array();
 		$allowed_types = array( 'image/jpeg', 'image/png', 'image/gif', 'image/webp' );
 
@@ -131,6 +143,13 @@ class BF_REST_Proxy {
 			'type' => 'text',
 			'text' => $user_message,
 		);
+
+		// Rebuild the conversation: prior turns (if any) followed by the new user
+		// turn. On a first generation `history` is empty, so this is a single-turn
+		// call. On a refinement it carries the earlier prompt(s) and the block JSON
+		// Claude returned, so the model edits its own prior output instead of
+		// starting from scratch. The new turn's content carries the optional image.
+		$messages = self::build_messages( $history, $user_content );
 
 		// Define the block schema as a tool and force Claude to call it. This is
 		// the modern replacement for assistant-prefill JSON forcing — prefill is
@@ -180,12 +199,7 @@ class BF_REST_Proxy {
 				'type' => 'tool',
 				'name' => 'emit_block',
 			),
-			'messages'    => array(
-				array(
-					'role'    => 'user',
-					'content' => $user_content,
-				),
-			),
+			'messages'    => $messages,
 		);
 
 		$response = wp_remote_post( self::API_URL, array(
@@ -251,6 +265,63 @@ class BF_REST_Proxy {
 	}
 
 	/**
+	 * Assemble the Anthropic `messages` array from the client-supplied history
+	 * plus the new user turn.
+	 *
+	 * History items are sanitized structurally (role must be user/assistant,
+	 * content must be a non-empty string) but their content is passed through
+	 * verbatim — it holds the block JSON / render.php markup Claude emitted
+	 * earlier, which sanitize_text_field would corrupt. We keep only the most
+	 * recent turns to bound payload size (and therefore token cost), and append
+	 * the new turn last so the conversation ends on a user turn as the API
+	 * requires.
+	 *
+	 * @param mixed $history      Raw `history` param (expected array of turns).
+	 * @param mixed $user_content Content for the new user turn — either a plain
+	 *                            string, or an array of content blocks (e.g. a
+	 *                            vision image block followed by a text block).
+	 * @return array Anthropic-shaped messages array.
+	 */
+	private static function build_messages( $history, $user_content ) {
+
+		// Cap retained turns so a long back-and-forth can't balloon the request.
+		$max_history_turns = 20;
+
+		$messages = array();
+
+		if ( is_array( $history ) ) {
+			if ( count( $history ) > $max_history_turns ) {
+				$history = array_slice( $history, -$max_history_turns );
+			}
+
+			foreach ( $history as $turn ) {
+				if ( ! is_array( $turn ) ) {
+					continue;
+				}
+
+				$role    = isset( $turn['role'] ) ? $turn['role'] : '';
+				$content = isset( $turn['content'] ) ? $turn['content'] : '';
+
+				if ( ( 'user' === $role || 'assistant' === $role )
+					&& is_string( $content )
+					&& '' !== $content ) {
+					$messages[] = array(
+						'role'    => $role,
+						'content' => $content,
+					);
+				}
+			}
+		}
+
+		$messages[] = array(
+			'role'    => 'user',
+			'content' => $user_content,
+		);
+
+		return $messages;
+	}
+
+	/**
 	 * Build the system prompt that tells Claude how to format block output.
 	 */
 	private static function build_system_prompt( $extra_ctx = '' ) {
@@ -290,6 +361,7 @@ RULES:
 10. Keep code clean, well-commented, and production-quality.
 11. Always respond via the `emit_block` tool call — never output the JSON as plain text or wrapped in markdown fences.
 12. The editor `edit` component should be a rich, interactive preview that closely mirrors what `render.php` will produce on the frontend.
+13. If the conversation already contains a block you generated and the user asks for changes, apply the requested edits and return the COMPLETE updated block — every file in full, not a diff or partial snippet — keeping the same `slug` unless the user explicitly asks to rename it, and preserving everything they did not ask to change.
 SYSTEM;
 
 		if ( ! empty( $extra_ctx ) ) {

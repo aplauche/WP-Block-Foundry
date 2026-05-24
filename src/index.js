@@ -123,6 +123,13 @@ const BlockFoundryPanel = () => {
 	const [ deployedBlocks, setDeployed ]   = useState( [] );
 	const [ activeTab, setActiveTab ]       = useState( 'generate' );
 	const [ elapsed, setElapsed ]           = useState( 0 );
+	// Full conversation with Claude for the block currently in preview, oldest
+	// turn first: [ { role:'user', content }, { role:'assistant', content }, … ].
+	// We replay it on each refinement so Claude edits its own prior output.
+	const [ conversation, setConversation ] = useState( [] );
+	// The pending "request changes" text in the preview panel.
+	const [ refineText, setRefineText ]     = useState( '' );
+	const [ isRefining, setIsRefining ]     = useState( false );
 	const textareaRef                       = useRef();
 	const timerRef                          = useRef();
 
@@ -179,7 +186,63 @@ const BlockFoundryPanel = () => {
 
 	const onClearImage = useCallback( () => setImage( null ), [] );
 
-	/* ---- Send prompt to Claude via our server-side proxy ---- */
+	/* ---- Elapsed-seconds counter shared by generate + refine ---- */
+	// Both calls are single, blocking (non-streaming) requests, so elapsed time
+	// is the only honest progress signal we can show while we wait.
+	const startTimer = () => {
+		setElapsed( 0 );
+		const startedAt = Date.now();
+		timerRef.current = setInterval( () => {
+			setElapsed( Math.floor( ( Date.now() - startedAt ) / 1000 ) );
+		}, 1000 );
+	};
+	const stopTimer = () => clearInterval( timerRef.current );
+
+	/**
+	 * Parse Claude's response string into a block object, or null if it isn't
+	 * valid block JSON. Tolerates stray markdown fences.
+	 *
+	 * @param {string} text Raw response string from the /prompt endpoint.
+	 * @return {Object|null} Parsed block, or null when it isn't usable.
+	 */
+	const parseBlockResponse = ( text ) => {
+		try {
+			const cleaned = text
+				.replace( /^```(?:json)?\s*/i, '' )
+				.replace( /\s*```$/i, '' );
+			const parsed = JSON.parse( cleaned );
+			return parsed.slug && parsed.files ? parsed : null;
+		} catch ( e ) {
+			return null;
+		}
+	};
+
+	/**
+	 * POST a message (plus any prior turns and an optional reference image) to
+	 * the proxy and return the raw response string. Shared by the initial
+	 * generation and every refinement.
+	 *
+	 * @param {string} message The new user message.
+	 * @param {Array}  history Prior conversation turns, oldest-first.
+	 * @param {Object} [img]   Optional reference image { mediaType, data }.
+	 * @return {Promise<string>} Claude's response string.
+	 */
+	const requestBlock = async ( message, history, img ) => {
+		const data = { message, history };
+		// Attach the reference image inline only when present; it rides along on
+		// this single request and is never uploaded to the media library.
+		if ( img ) {
+			data.image = { media_type: img.mediaType, data: img.data };
+		}
+		const result = await apiFetch( {
+			path: '/block-foundry/v1/prompt',
+			method: 'POST',
+			data,
+		} );
+		return result.response;
+	};
+
+	/* ---- Send the initial prompt to Claude via our server-side proxy ---- */
 	const handleGenerate = useCallback( async () => {
 		if ( ! prompt.trim() ) return;
 
@@ -187,55 +250,31 @@ const BlockFoundryPanel = () => {
 		setResponse( null );
 		setParsedBlock( null );
 		setNotice( null );
-
-		// Tick an elapsed-seconds counter for the button. The request is a single
-		// blocking call (no streaming), so elapsed time is the only honest
-		// progress signal we can show while we wait for the full response.
-		setElapsed( 0 );
-		const startedAt = Date.now();
-		timerRef.current = setInterval( () => {
-			setElapsed( Math.floor( ( Date.now() - startedAt ) / 1000 ) );
-		}, 1000 );
+		setConversation( [] );
+		setRefineText( '' );
+		startTimer();
 
 		try {
-			// Text is required; attach the reference image inline only if present.
-			const data = { message: prompt };
-			if ( image ) {
-				data.image = { media_type: image.mediaType, data: image.data };
-			}
+			// First turn: no history, but attach the reference image if present.
+			const responseText = await requestBlock( prompt, [], image );
+			setResponse( responseText );
 
-			const result = await apiFetch( {
-				path: '/block-foundry/v1/prompt',
-				method: 'POST',
-				data,
-			} );
-
-			setResponse( result.response );
-
-			// Try to parse the JSON block data.
-			try {
-				let cleaned = result.response;
-				// Strip markdown fences if present.
-				cleaned = cleaned.replace( /^```(?:json)?\s*/i, '' );
-				cleaned = cleaned.replace( /\s*```$/i, '' );
-				const parsed = JSON.parse( cleaned );
-
-				if ( parsed.slug && parsed.files ) {
-					setParsedBlock( parsed );
-					setNotice( {
-						status: 'success',
-						message: `Block "${ parsed.title || parsed.slug }" generated! Review the code below then click Deploy.`,
-					} );
-				} else {
-					setNotice( {
-						status: 'warning',
-						message: 'Claude responded but the output was not valid block JSON. You can try refining your prompt.',
-					} );
-				}
-			} catch ( parseErr ) {
+			const parsed = parseBlockResponse( responseText );
+			if ( parsed ) {
+				setParsedBlock( parsed );
+				// Seed the conversation so the next message can refine this block.
+				setConversation( [
+					{ role: 'user', content: prompt },
+					{ role: 'assistant', content: responseText },
+				] );
+				setNotice( {
+					status: 'success',
+					message: `Block "${ parsed.title || parsed.slug }" generated! Review the fields below — request changes or deploy.`,
+				} );
+			} else {
 				setNotice( {
 					status: 'warning',
-					message: 'Claude responded but the output could not be parsed as JSON. Check the raw response.',
+					message: 'Claude responded but the output was not valid block JSON. You can try refining your prompt.',
 				} );
 			}
 		} catch ( err ) {
@@ -244,10 +283,58 @@ const BlockFoundryPanel = () => {
 				message: err.message || 'Something went wrong talking to the AI.',
 			} );
 		} finally {
-			clearInterval( timerRef.current );
+			stopTimer();
 			setIsLoading( false );
 		}
 	}, [ prompt, image ] );
+
+	/* ---- Send a follow-up edit request, replacing the previewed block ---- */
+	const handleRefine = useCallback( async () => {
+		const instruction = refineText.trim();
+		if ( ! instruction || ! parsedBlock ) return;
+
+		setIsRefining( true );
+		setNotice( null );
+		startTimer();
+
+		try {
+			// Re-send the reference image (if one is attached) so the model keeps
+			// it as the visual source of truth while applying the requested edits.
+			const responseText = await requestBlock( instruction, conversation, image );
+
+			const parsed = parseBlockResponse( responseText );
+			if ( parsed ) {
+				setParsedBlock( parsed );
+				setResponse( responseText );
+				// Record both turns so further edits keep the full context.
+				setConversation( [
+					...conversation,
+					{ role: 'user', content: instruction },
+					{ role: 'assistant', content: responseText },
+				] );
+				setRefineText( '' );
+				setNotice( {
+					status: 'success',
+					message: 'Block updated. Review the changes — request more edits or deploy.',
+				} );
+			} else {
+				// Keep the existing previewed block and the user's text so they
+				// can rephrase rather than losing their request.
+				setNotice( {
+					status: 'warning',
+					message: 'Claude responded but the updated output was not valid block JSON. Try rephrasing your edit.',
+				} );
+			}
+		} catch ( err ) {
+			setNotice( {
+				status: 'error',
+				message: err.message || 'Something went wrong talking to the AI.',
+			} );
+		} finally {
+			stopTimer();
+			setIsRefining( false );
+		}
+	}, [ refineText, parsedBlock, conversation, image ] );
 
 	/* ---- Deploy the parsed block ---- */
 	const handleDeploy = useCallback( async () => {
@@ -373,6 +460,13 @@ const BlockFoundryPanel = () => {
 	/* ---- Derive the editable field list shown in the Preview panel ---- */
 	const blockFields = parsedBlock ? parseBlockFields( parsedBlock ) : [];
 
+	/* ---- The edit requests sent so far (the user turns after the first) ---- */
+	const editRequests = conversation
+		.filter( ( turn, i ) => i > 0 && turn.role === 'user' )
+		.map( ( turn ) => turn.content );
+
+	const isBusy = isLoading || isDeploying || isRefining;
+
 	/* ---- Render ---- */
 	return (
 		<>
@@ -455,7 +549,7 @@ const BlockFoundryPanel = () => {
 													<Button
 														variant="primary"
 														onClick={ handleGenerate }
-														disabled={ isLoading || ! prompt.trim() }
+														disabled={ isBusy || ! prompt.trim() }
 														isBusy={ isLoading }
 														className="bf-generate-btn"
 													>
@@ -496,11 +590,50 @@ const BlockFoundryPanel = () => {
 														) }
 													</div>
 
+													{ /* Iterate on the block before committing it to disk:
+													     send Claude an edit request and swap in the revised
+													     block it returns. */ }
+													<div className="bf-refine">
+														{ editRequests.length > 0 && (
+															<ol className="bf-refine-log">
+																{ editRequests.map( ( req, i ) => (
+																	<li key={ i }>{ req }</li>
+																) ) }
+															</ol>
+														) }
+
+														<TextareaControl
+															label="Request changes"
+															help="Describe what to adjust, then send it back to Claude before deploying."
+															value={ refineText }
+															onChange={ setRefineText }
+															rows={ 3 }
+															placeholder="e.g. Add a subtitle field and let the star rating go up to 10."
+															disabled={ isBusy }
+														/>
+
+														<Button
+															variant="secondary"
+															onClick={ handleRefine }
+															disabled={ isBusy || ! refineText.trim() }
+															isBusy={ isRefining }
+															className="bf-refine-btn"
+														>
+															{ isRefining ? (
+																<>
+																	<Spinner /> Updating… { elapsed }s
+																</>
+															) : (
+																'Send to Claude'
+															) }
+														</Button>
+													</div>
+
 													<div className="bf-deploy-actions">
 														<Button
 															variant="primary"
 															onClick={ handleDeploy }
-															disabled={ isDeploying }
+															disabled={ isBusy }
 															isBusy={ isDeploying }
 														>
 															{ isDeploying ? (
