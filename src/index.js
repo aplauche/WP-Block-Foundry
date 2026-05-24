@@ -25,6 +25,7 @@ import {
 	unregisterBlockType,
 	unstable__bootstrapServerSideBlockDefinitions,
 } from '@wordpress/blocks';
+import { dispatch } from '@wordpress/data';
 import apiFetch from '@wordpress/api-fetch';
 
 import './editor.scss';
@@ -82,6 +83,26 @@ const injectStyle = ( href ) => {
 	tag.rel = 'stylesheet';
 	tag.href = href;
 	document.head.appendChild( tag );
+};
+
+/**
+ * Extract the block's editable fields from its block.json (which we already
+ * hold client-side as a string in the generated payload). Drives the Preview
+ * panel's field list.
+ *
+ * @param {Object} block Parsed block payload with a files['block.json'] string.
+ * @return {Array<{name: string, type: string}>} Field descriptors; empty if block.json can't be parsed.
+ */
+const parseBlockFields = ( block ) => {
+	try {
+		const attrs = JSON.parse( block.files[ 'block.json' ] ).attributes || {};
+		return Object.keys( attrs ).map( ( name ) => ( {
+			name,
+			type: attrs[ name ].type || 'mixed',
+		} ) );
+	} catch ( e ) {
+		return [];
+	}
 };
 
 /* ------------------------------------------------------------------ */
@@ -199,12 +220,9 @@ const BlockFoundryPanel = () => {
 			} );
 
 			if ( result.ok ) {
-				setNotice( {
-					status: 'success',
-					message: `Block "${ result.title }" deployed! Refreshing the editor…`,
-				} );
-
-				// Register the new block in the editor so it appears in the inserter.
+				// Register the new block in the editor so it appears in the
+				// inserter. On success this fires a toast in the main window; on
+				// fallback it sets a "reload" notice in the sidebar.
 				await refreshBlockRegistry( parsedBlock );
 				await fetchDeployedBlocks();
 			}
@@ -283,10 +301,14 @@ const BlockFoundryPanel = () => {
 
 				// Confirm it actually landed in the registry before declaring success.
 				if ( getBlockType( meta.name ) ) {
-					setNotice( {
-						status: 'success',
-						message: `Block "${ block.title || block.slug }" is ready — find it in the inserter. No reload needed.`,
-					} );
+					// Surface success as a toast (snackbar) in the main editor
+					// window, and clear the sidebar notice so it lives in one place.
+					setNotice( null );
+					dispatch( 'core/notices' ).createNotice(
+						'success',
+						`Block "${ block.title || block.slug }" added — find it in the inserter.`,
+						{ type: 'snackbar', isDismissible: true }
+					);
 					return;
 				}
 			} catch ( e ) {
@@ -303,6 +325,9 @@ const BlockFoundryPanel = () => {
 			message: ( prev?.message || 'Block deployed!' ) + ' Click "Reload Editor" below to see it in the inserter.',
 		} ) );
 	};
+
+	/* ---- Derive the editable field list shown in the Preview panel ---- */
+	const blockFields = parsedBlock ? parseBlockFields( parsedBlock ) : [];
 
 	/* ---- Render ---- */
 	return (
@@ -384,19 +409,21 @@ const BlockFoundryPanel = () => {
 														<code>{ parsedBlock.slug }</code>
 													</div>
 
-													<div className="bf-file-list">
-														<strong>Files:</strong>
-														<ul>
-															{ Object.keys( parsedBlock.files ).map( ( f ) => (
-																<li key={ f }><code>{ f }</code></li>
-															) ) }
-														</ul>
+													<div className="bf-field-list">
+														<strong>Fields</strong>
+														{ blockFields.length === 0 ? (
+															<p className="bf-empty">This block has no configurable fields.</p>
+														) : (
+															<ul>
+																{ blockFields.map( ( f ) => (
+																	<li key={ f.name }>
+																		<code>{ f.name }</code>
+																		<span className="bf-field-type">{ f.type }</span>
+																	</li>
+																) ) }
+															</ul>
+														) }
 													</div>
-
-													<details className="bf-raw-response">
-														<summary>View Raw JSON</summary>
-														<pre>{ JSON.stringify( parsedBlock, null, 2 ) }</pre>
-													</details>
 
 													<div className="bf-deploy-actions">
 														<Button

@@ -65,7 +65,7 @@
 	}
 }
 
-.bf-file-list {
+.bf-field-list {
 	margin-bottom: 12px;
 
 	strong {
@@ -84,6 +84,10 @@
 	}
 
 	li {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
 		padding: 3px 0;
 
 		code {
@@ -93,38 +97,11 @@
 			border-radius: 3px;
 		}
 	}
-}
 
-.bf-raw-response {
-	margin-bottom: 16px;
-	border: 1px solid #e0e0e0;
-	border-radius: 4px;
-	padding: 0;
-
-	summary {
-		padding: 8px 12px;
-		cursor: pointer;
-		font-size: 12px;
-		font-weight: 500;
-		color: #666;
-		user-select: none;
-
-		&:hover {
-			color: #333;
-		}
-	}
-
-	pre {
-		margin: 0;
-		padding: 12px;
+	.bf-field-type {
 		font-size: 11px;
-		line-height: 1.4;
-		background: #f9f9f9;
-		border-top: 1px solid #e0e0e0;
-		max-height: 300px;
-		overflow: auto;
-		white-space: pre-wrap;
-		word-break: break-word;
+		color: #888;
+		font-style: italic;
 	}
 }
 
