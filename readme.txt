@@ -43,6 +43,8 @@ Rather than ask for raw JSON in the prompt and hope for clean output, we force t
 * We set `tool_choice` to `{"type": "tool", "name": "emit_block"}`, which forces Claude to respond by calling that one tool. The model can only answer with a `tool_use` block whose `input` conforms to the schema — never free text, never a ```json fence.
 * The proxy reads the `tool_use` block's `input` (an already-parsed object), re-encodes it to a JSON string, and hands it to the browser. The `/deploy-block` endpoint then writes each file in the `files` map to disk.
 
+You can also attach an optional reference image of the block you want. It is sent inline to the model as a vision input alongside your text description (the text is required; the image is not). The image is never written to disk or the media library — it lives only in that single generation request.
+
 Notes for anyone modifying this:
 
 * `emit_block` is an arbitrary name we chose — nothing keys off it server-side at Anthropic. If you rename the tool in the request, also update the matching `'emit_block' === $block['name']` check in the extraction loop.

@@ -47,6 +47,14 @@ class BF_REST_Proxy {
 					'type'     => 'string',
 					'default'  => '',
 				),
+				// Optional reference image sent straight to the model as vision
+				// input. We do NOT store it in the media library — it lives only
+				// in this request. Shape: { media_type: string, data: base64 }.
+				'image'   => array(
+					'required' => false,
+					'type'     => 'object',
+					'default'  => null,
+				),
 			),
 		) );
 	}
@@ -92,8 +100,37 @@ class BF_REST_Proxy {
 
 		$user_message = $request->get_param( 'message' );
 		$extra_ctx    = $request->get_param( 'context' );
+		$image        = $request->get_param( 'image' );
 
 		$system_prompt = self::build_system_prompt( $extra_ctx );
+
+		// Build the user turn content. Text is always present (required); when a
+		// valid reference image was sent, prepend it as a vision block so the
+		// model can see what the user wants. The image is used in-request only —
+		// never written to disk or the media library.
+		$user_content  = array();
+		$allowed_types = array( 'image/jpeg', 'image/png', 'image/gif', 'image/webp' );
+
+		if ( is_array( $image )
+			&& ! empty( $image['data'] )
+			&& ! empty( $image['media_type'] )
+			&& in_array( $image['media_type'], $allowed_types, true ) ) {
+			$user_content[] = array(
+				'type'   => 'image',
+				'source' => array(
+					'type'       => 'base64',
+					'media_type' => $image['media_type'],
+					// Strip anything outside the base64 alphabet as a safety net
+					// (the client sends the bare data, no "data:" URL prefix).
+					'data'       => preg_replace( '/[^A-Za-z0-9+\/=]/', '', $image['data'] ),
+				),
+			);
+		}
+
+		$user_content[] = array(
+			'type' => 'text',
+			'text' => $user_message,
+		);
 
 		// Define the block schema as a tool and force Claude to call it. This is
 		// the modern replacement for assistant-prefill JSON forcing — prefill is
@@ -146,7 +183,7 @@ class BF_REST_Proxy {
 			'messages'    => array(
 				array(
 					'role'    => 'user',
-					'content' => $user_message,
+					'content' => $user_content,
 				),
 			),
 		);
@@ -218,7 +255,7 @@ class BF_REST_Proxy {
 	 */
 	private static function build_system_prompt( $extra_ctx = '' ) {
 		$prompt = <<<'SYSTEM'
-You are an expert WordPress Gutenberg block developer. The user will describe a custom block they need.
+You are an expert WordPress Gutenberg block developer. The user will describe a custom block they need. They may also attach a reference image showing the block's desired appearance — when one is present, treat it as the visual source of truth and match its layout, colours, spacing, and typography as closely as the generated CSS allows.
 
 Your job is to generate the files required for a **dynamic WordPress block** using the modern `block.json` registration method. ALL blocks MUST be dynamic — the frontend is ALWAYS rendered by a `render.php` PHP template. The `save` function in JS MUST return `null` so WordPress stores only block attributes (no static HTML markup).
 

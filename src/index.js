@@ -19,6 +19,7 @@ import {
 	Spinner,
 	Notice,
 	TabPanel,
+	FormFileUpload,
 } from '@wordpress/components';
 import {
 	getBlockType,
@@ -111,6 +112,9 @@ const parseBlockFields = ( block ) => {
 
 const BlockFoundryPanel = () => {
 	const [ prompt, setPrompt ]             = useState( '' );
+	// Optional reference image: { name, mediaType, data (bare base64), dataUrl }.
+	// Sent inline to the LLM with the prompt — never uploaded to the media library.
+	const [ image, setImage ]               = useState( null );
 	const [ isLoading, setIsLoading ]       = useState( false );
 	const [ isDeploying, setIsDeploying ]   = useState( false );
 	const [ response, setResponse ]         = useState( null );
@@ -141,6 +145,40 @@ const BlockFoundryPanel = () => {
 		}
 	};
 
+	/* ---- Reference image: read the chosen file as base64 (no media library) ---- */
+	const onSelectImage = useCallback( ( event ) => {
+		const file = event.target.files && event.target.files[ 0 ];
+		// Reset the input so re-choosing the same file still fires onChange.
+		event.target.value = '';
+		if ( ! file ) return;
+
+		const allowed = [ 'image/jpeg', 'image/png', 'image/gif', 'image/webp' ];
+		if ( ! allowed.includes( file.type ) ) {
+			setNotice( { status: 'error', message: 'Please choose a JPEG, PNG, GIF, or WebP image.' } );
+			return;
+		}
+		// Cap at 3 MB — keeps us within the model's per-image limit and typical
+		// server request-size limits (base64 inflates the payload ~33%).
+		if ( file.size > 3 * 1024 * 1024 ) {
+			setNotice( { status: 'error', message: 'Image is too large — please use one under 3 MB.' } );
+			return;
+		}
+
+		const reader = new FileReader();
+		reader.onload = () => {
+			const dataUrl = String( reader.result ); // data:<mediaType>;base64,<data>
+			setImage( {
+				name: file.name,
+				mediaType: file.type,
+				data: dataUrl.split( ',' )[ 1 ] || '', // bare base64, no "data:" prefix
+				dataUrl,                                 // kept for the thumbnail preview
+			} );
+		};
+		reader.readAsDataURL( file );
+	}, [] );
+
+	const onClearImage = useCallback( () => setImage( null ), [] );
+
 	/* ---- Send prompt to Claude via our server-side proxy ---- */
 	const handleGenerate = useCallback( async () => {
 		if ( ! prompt.trim() ) return;
@@ -160,10 +198,16 @@ const BlockFoundryPanel = () => {
 		}, 1000 );
 
 		try {
+			// Text is required; attach the reference image inline only if present.
+			const data = { message: prompt };
+			if ( image ) {
+				data.image = { media_type: image.mediaType, data: image.data };
+			}
+
 			const result = await apiFetch( {
 				path: '/block-foundry/v1/prompt',
 				method: 'POST',
-				data: { message: prompt },
+				data,
 			} );
 
 			setResponse( result.response );
@@ -203,7 +247,7 @@ const BlockFoundryPanel = () => {
 			clearInterval( timerRef.current );
 			setIsLoading( false );
 		}
-	}, [ prompt ] );
+	}, [ prompt, image ] );
 
 	/* ---- Deploy the parsed block ---- */
 	const handleDeploy = useCallback( async () => {
@@ -378,6 +422,33 @@ const BlockFoundryPanel = () => {
 														rows={ 6 }
 														placeholder="e.g. A testimonial card block with fields for author name, photo, quote text, and a star rating from 1–5. Use a soft shadow and rounded corners."
 													/>
+												</PanelRow>
+
+												<PanelRow>
+													<div className="bf-image-upload">
+														<FormFileUpload
+															accept="image/*"
+															onChange={ onSelectImage }
+															variant="secondary"
+															className="bf-image-btn"
+														>
+															{ image ? 'Change reference image' : 'Add reference image (optional)' }
+														</FormFileUpload>
+
+														{ image && (
+															<div className="bf-image-preview">
+																<img src={ image.dataUrl } alt={ image.name } />
+																<Button
+																	variant="tertiary"
+																	isDestructive
+																	onClick={ onClearImage }
+																	className="bf-image-remove"
+																>
+																	Remove
+																</Button>
+															</div>
+														) }
+													</div>
 												</PanelRow>
 
 												<PanelRow>
