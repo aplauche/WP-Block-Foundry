@@ -147,7 +147,8 @@ const BlockFoundryPanel = () => {
 	const [ notice, setNotice ]             = useState( null );
 	const [ deployedBlocks, setDeployed ]   = useState( [] );
 	const [ activeTab, setActiveTab ]       = useState( 'generate' );
-	const [ elapsed, setElapsed ]           = useState( 0 );
+	// Elapsed-seconds timer temporarily disabled.
+	// const [ elapsed, setElapsed ]           = useState( 0 );
 	// Full conversation with Claude for the block currently in preview, oldest
 	// turn first: [ { role:'user', content }, { role:'assistant', content }, … ].
 	// We replay it on each refinement so Claude edits its own prior output.
@@ -156,7 +157,7 @@ const BlockFoundryPanel = () => {
 	const [ refineText, setRefineText ]     = useState( '' );
 	const [ isRefining, setIsRefining ]     = useState( false );
 	const textareaRef                       = useRef();
-	const timerRef                          = useRef();
+	// const timerRef                          = useRef();
 
 	/* ---- Fetch deployed blocks on mount ---- */
 	useEffect( () => {
@@ -164,7 +165,7 @@ const BlockFoundryPanel = () => {
 	}, [] );
 
 	/* ---- Clear the elapsed-time interval if we unmount mid-generation ---- */
-	useEffect( () => () => clearInterval( timerRef.current ), [] );
+	// useEffect( () => () => clearInterval( timerRef.current ), [] );
 
 	const fetchDeployedBlocks = async () => {
 		try {
@@ -211,17 +212,17 @@ const BlockFoundryPanel = () => {
 
 	const onClearImage = useCallback( () => setImage( null ), [] );
 
-	/* ---- Elapsed-seconds counter shared by generate + refine ---- */
+	/* ---- Elapsed-seconds counter shared by generate + refine (disabled) ---- */
 	// Both calls are single, blocking (non-streaming) requests, so elapsed time
 	// is the only honest progress signal we can show while we wait.
-	const startTimer = () => {
-		setElapsed( 0 );
-		const startedAt = Date.now();
-		timerRef.current = setInterval( () => {
-			setElapsed( Math.floor( ( Date.now() - startedAt ) / 1000 ) );
-		}, 1000 );
-	};
-	const stopTimer = () => clearInterval( timerRef.current );
+	// const startTimer = () => {
+	// 	setElapsed( 0 );
+	// 	const startedAt = Date.now();
+	// 	timerRef.current = setInterval( () => {
+	// 		setElapsed( Math.floor( ( Date.now() - startedAt ) / 1000 ) );
+	// 	}, 1000 );
+	// };
+	// const stopTimer = () => clearInterval( timerRef.current );
 
 	/**
 	 * Parse Claude's response string into a block object, or null if it isn't
@@ -277,7 +278,7 @@ const BlockFoundryPanel = () => {
 		setNotice( null );
 		setConversation( [] );
 		setRefineText( '' );
-		startTimer();
+		// startTimer();
 
 		try {
 			// First turn: no history, but attach the reference image if present.
@@ -308,7 +309,7 @@ const BlockFoundryPanel = () => {
 				message: err.message || 'Something went wrong talking to the AI.',
 			} );
 		} finally {
-			stopTimer();
+			// stopTimer();
 			setIsLoading( false );
 		}
 	}, [ prompt, image ] );
@@ -320,7 +321,7 @@ const BlockFoundryPanel = () => {
 
 		setIsRefining( true );
 		setNotice( null );
-		startTimer();
+		// startTimer();
 
 		try {
 			// Re-send the reference image (if one is attached) so the model keeps
@@ -356,7 +357,7 @@ const BlockFoundryPanel = () => {
 				message: err.message || 'Something went wrong talking to the AI.',
 			} );
 		} finally {
-			stopTimer();
+			// stopTimer();
 			setIsRefining( false );
 		}
 	}, [ refineText, parsedBlock, conversation, image ] );
@@ -580,7 +581,7 @@ const BlockFoundryPanel = () => {
 													>
 														{ isLoading ? (
 															<>
-																<Spinner /> Generating… { elapsed }s
+																<Spinner /> Generating…{ /* { elapsed }s */ }
 															</>
 														) : (
 															'Generate Block'
@@ -646,7 +647,7 @@ const BlockFoundryPanel = () => {
 														>
 															{ isRefining ? (
 																<>
-																	<Spinner /> Updating… { elapsed }s
+																	<Spinner /> Updating…{ /* { elapsed }s */ }
 																</>
 															) : (
 																'Send to Claude'
