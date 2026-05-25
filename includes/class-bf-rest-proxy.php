@@ -326,7 +326,7 @@ class BF_REST_Proxy {
 	 */
 	private static function build_system_prompt( $extra_ctx = '' ) {
 		$prompt = <<<'SYSTEM'
-You are an expert WordPress Gutenberg block developer. The user will describe a custom block they need. They may also attach a reference image showing the block's desired appearance — when one is present, treat it as the visual source of truth and match its layout, colours, spacing, and typography as closely as the generated CSS allows.
+You are an expert WordPress Gutenberg block developer. The user will describe a custom block they need. They may also attach a reference image showing the block's desired appearance — when one is present, use it as the source of truth for LAYOUT, COMPOSITION, and STRUCTURE. If a DESIGN TOKENS section appears later in this prompt, the active theme's tokens take precedence over the image for colour, typography, and spacing: map the image's look to the nearest token instead of copying its exact values.
 
 Your job is to generate the files required for a **dynamic WordPress block** using the modern `block.json` registration method. ALL blocks MUST be dynamic — the frontend is ALWAYS rendered by a `render.php` PHP template. The `save` function in JS MUST return `null` so WordPress stores only block attributes (no static HTML markup).
 
@@ -353,7 +353,7 @@ RULES:
 2. In `block.json`, set `"name": "block-foundry/<slug>"` and include `"render": "file:./render.php"`. Do NOT include `editorScript`, `style`, or `editorStyle` keys — the PHP registration layer handles asset enqueuing automatically.
 3. EVERY block MUST include a `render.php` file. This is the ONLY way frontend output is produced. Never create static blocks.
 4. The `save` function MUST always return `null`. No exceptions. All frontend markup comes from `render.php`.
-5. `render.php` receives `$attributes` (block attributes array) and `$content` (inner block content string). Use these to render the HTML. Wrap output in a container with `<?php echo get_block_wrapper_attributes(); ?>` for proper block styling support.
+5. `render.php` receives `$attributes` (block attributes array) and `$content` (inner block content string). Use these to render the HTML. Wrap output in a container with `<?php echo get_block_wrapper_attributes(); ?>` for proper block styling support. CRITICAL: `render.php` is `include`d on EVERY render and may run multiple times in a single request (e.g. the post's content and its excerpt, or several block instances). NEVER declare global functions or classes at the top level of `render.php` — a second include would fatal with "Cannot redeclare". If you need a helper, either inline the logic, use an anonymous closure assigned to a variable, or guard the declaration with `if ( ! function_exists( 'bf_<slug>_<name>' ) ) { ... }` using a slug-prefixed, collision-proof name.
 6. `index.js` is the ONLY JavaScript file. Define the editor `edit` component inline in `index.js`, then register the block in the SAME file by calling `wp.blocks.registerBlockType( 'block-foundry/<slug>', { edit: EditComponent, save: function() { return null; } } )`. Do NOT create a separate `edit.js`, and do NOT pass the component through a `window` global.
 7. Use `wp.blockEditor`, `wp.components`, and `wp.element` — these are available as globals. Access them directly (e.g. `const el = wp.element.createElement;`).
 8. Do NOT use JSX. Use `wp.element.createElement` (aliased as `el`) so files work without a build step.
@@ -362,12 +362,188 @@ RULES:
 11. Always respond via the `emit_block` tool call — never output the JSON as plain text or wrapped in markdown fences.
 12. The editor `edit` component should be a rich, interactive preview that closely mirrors what `render.php` will produce on the frontend.
 13. If the conversation already contains a block you generated and the user asks for changes, apply the requested edits and return the COMPLETE updated block — every file in full, not a diff or partial snippet — keeping the same `slug` unless the user explicitly asks to rename it, and preserving everything they did not ask to change.
+14. THEME DESIGN TOKENS: If a DESIGN TOKENS section is present below, you MUST style the block with those theme.json presets for every colour, font size, font family, and spacing value — reference them as CSS custom properties in BOTH style.css and editor.css, e.g. `color: var(--wp--preset--color--primary);`, `font-size: var(--wp--preset--font-size--large);`, `padding: var(--wp--preset--spacing--40);`. Choose the closest token to the design intent; only hardcode a raw value when no suitable token exists, and keep such cases minimal.
+15. Where it suits the block, enable the matching block `supports` in block.json (e.g. `color`, `typography`, `spacing`) so the editor surfaces the theme's own palette and controls.
 SYSTEM;
+
+		// Append the active theme's design tokens (theme.json presets) so the
+		// block styles itself with the theme's palette/typography/spacing. Empty
+		// when the theme exposes no usable presets.
+		$tokens = self::build_design_tokens_context();
+		if ( '' !== $tokens ) {
+			$prompt .= "\n\n" . $tokens;
+		}
 
 		if ( ! empty( $extra_ctx ) ) {
 			$prompt .= "\n\nAdditional context from the user's editor:\n" . $extra_ctx;
 		}
 
 		return $prompt;
+	}
+
+	/**
+	 * Build a DESIGN TOKENS section from the ACTIVE theme's theme.json so
+	 * generated blocks style themselves with the theme's presets (referenced as
+	 * CSS custom properties) instead of hardcoded values.
+	 *
+	 * Pulled at runtime from `wp_get_global_settings()`, which resolves the
+	 * merged theme.json (WordPress core defaults + parent/child theme + user
+	 * Global Styles). Returns '' when no usable tokens are found (e.g. a classic
+	 * theme with no theme.json and no presets).
+	 *
+	 * @return string
+	 */
+	private static function build_design_tokens_context() {
+
+		if ( ! function_exists( 'wp_get_global_settings' ) ) {
+			return ''; // Pre-5.9 / no block-settings support.
+		}
+
+		$settings = wp_get_global_settings();
+		if ( ! is_array( $settings ) ) {
+			return '';
+		}
+
+		// preset path => [ value key, human label, CSS var segment ].
+		$groups = array(
+			array( array( 'color', 'palette' ),          'color',      'Colours',       'color' ),
+			array( array( 'color', 'gradients' ),         'gradient',   'Gradients',     'gradient' ),
+			array( array( 'typography', 'fontSizes' ),    'size',       'Font sizes',    'font-size' ),
+			array( array( 'typography', 'fontFamilies' ), 'fontFamily', 'Font families', 'font-family' ),
+			array( array( 'spacing', 'spacingSizes' ),    'size',       'Spacing',       'spacing' ),
+		);
+
+		$sections = array();
+
+		foreach ( $groups as $group ) {
+			list( $path, $value_key, $label, $css_segment ) = $group;
+
+			$raw    = self::array_get( $settings, $path );
+			$tokens = self::extract_presets( $raw, $value_key );
+
+			if ( empty( $tokens ) ) {
+				continue;
+			}
+
+			$sections[] = sprintf(
+				"%s — CSS: var(--wp--preset--%s--<slug>):\n%s",
+				$label,
+				$css_segment,
+				self::format_tokens( $tokens )
+			);
+		}
+
+		if ( empty( $sections ) ) {
+			return '';
+		}
+
+		$intro = 'DESIGN TOKENS — the active theme\'s theme.json presets. Style the block using ONLY these for colour, typography, and spacing, referencing them as CSS custom properties (e.g. `color: var(--wp--preset--color--primary);`). Pick the closest token to the design intent; hardcode a raw value ONLY when nothing suitable exists.';
+
+		$precedence = 'PRECEDENCE: These tokens OVERRIDE any reference image for colour, typography, and spacing. Use a reference image for layout/structure only — map its look to the nearest token above rather than copying its exact hex/px values.';
+
+		return $intro . "\n\n" . implode( "\n\n", $sections ) . "\n\n" . $precedence;
+	}
+
+	/**
+	 * Normalize a theme.json preset list into a flat, slug-deduped list of
+	 * { slug, value, name }.
+	 *
+	 * Preset values may arrive origin-keyed (theme/custom/user/default) or as a
+	 * plain list, depending on WP version. Theme-specific origins win; the core
+	 * `default` palette is used only as a fallback so the list stays specific to
+	 * the active theme.
+	 *
+	 * @param mixed  $presets   Raw preset value from settings.
+	 * @param string $value_key Key holding the value (color|gradient|size|fontFamily).
+	 * @return array<int, array{slug:string, value:string, name:string}>
+	 */
+	private static function extract_presets( $presets, $value_key ) {
+
+		if ( ! is_array( $presets ) || empty( $presets ) ) {
+			return array();
+		}
+
+		$origin_keys = array( 'theme', 'custom', 'user', 'default', 'core', 'blocks' );
+		$is_keyed    = (bool) array_intersect( array_keys( $presets ), $origin_keys );
+
+		$lists = array();
+		if ( $is_keyed ) {
+			foreach ( array( 'theme', 'custom', 'user' ) as $origin ) {
+				if ( ! empty( $presets[ $origin ] ) && is_array( $presets[ $origin ] ) ) {
+					$lists[] = $presets[ $origin ];
+				}
+			}
+			// Fall back to the core default palette only if the theme defines none.
+			if ( empty( $lists ) && ! empty( $presets['default'] ) && is_array( $presets['default'] ) ) {
+				$lists[] = $presets['default'];
+			}
+		} else {
+			$lists[] = $presets;
+		}
+
+		$out = array();
+		foreach ( $lists as $list ) {
+			foreach ( $list as $preset ) {
+				if ( ! is_array( $preset ) || empty( $preset['slug'] ) || ! isset( $preset[ $value_key ] ) ) {
+					continue;
+				}
+				$value = $preset[ $value_key ];
+				$slug  = sanitize_key( $preset['slug'] );
+				// Later origins (custom/user) override earlier ones by slug.
+				$out[ $slug ] = array(
+					'slug'  => $slug,
+					'value' => is_string( $value ) ? $value : wp_json_encode( $value ),
+					'name'  => isset( $preset['name'] ) ? (string) $preset['name'] : '',
+				);
+			}
+		}
+
+		return array_values( $out );
+	}
+
+	/**
+	 * Render a normalized token list as compact prompt lines:
+	 * `- <slug>: <value> (<name>)`.
+	 *
+	 * @param array $tokens Output of extract_presets().
+	 * @return string
+	 */
+	private static function format_tokens( $tokens ) {
+
+		$lines = array();
+
+		// Cap the list so an unusually large palette can't dominate the prompt.
+		foreach ( array_slice( $tokens, 0, 40 ) as $token ) {
+			$value = trim( preg_replace( '/\s+/', ' ', $token['value'] ) );
+			if ( strlen( $value ) > 80 ) {
+				$value = substr( $value, 0, 77 ) . '...';
+			}
+			$label   = ( '' !== $token['name'] ) ? ' (' . $token['name'] . ')' : '';
+			$lines[] = '- ' . $token['slug'] . ': ' . $value . $label;
+		}
+
+		return implode( "\n", $lines );
+	}
+
+	/**
+	 * Safely read a nested value from an array by path, without WP helpers
+	 * (kept dependency-free so it works regardless of load order).
+	 *
+	 * @param array $array Source array.
+	 * @param array $path  Ordered list of keys.
+	 * @return mixed Value at the path, or array() if absent.
+	 */
+	private static function array_get( $array, $path ) {
+
+		$value = $array;
+		foreach ( $path as $key ) {
+			if ( is_array( $value ) && array_key_exists( $key, $value ) ) {
+				$value = $value[ $key ];
+			} else {
+				return array();
+			}
+		}
+
+		return $value;
 	}
 }

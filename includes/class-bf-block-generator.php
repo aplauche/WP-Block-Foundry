@@ -82,17 +82,42 @@ class BF_Block_Generator {
 		}
 
 		$slug = sanitize_file_name( $data['slug'] );
-		$dir  = BF_GENERATED_DIR . $slug . '/';
 
-		// Create directory.
-		if ( ! is_dir( $dir ) ) {
-			if ( ! wp_mkdir_p( $dir ) ) {
-				return new WP_Error(
-					'bf_fs_error',
-					__( 'Could not create block directory.', 'block-foundry' ),
-					array( 'status' => 500 )
-				);
-			}
+		if ( '' === $slug ) {
+			return new WP_Error(
+				'bf_invalid_slug',
+				__( 'Block slug is empty or invalid.', 'block-foundry' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		$dir = BF_GENERATED_DIR . $slug . '/';
+
+		// Ensure the generated-blocks base exists BEFORE creating the per-block
+		// dir. The activation hook normally creates it, but the runtime
+		// filesystem can drift out from under a long-running dev server (e.g. a
+		// WP Playground instance whose mount of the plugin folder went stale
+		// after the directory was moved/recreated on the host). Creating the
+		// base one level at a time also avoids recursive-mkdir issues across a
+		// mount point.
+		if ( ! is_dir( BF_GENERATED_DIR ) ) {
+			wp_mkdir_p( BF_GENERATED_DIR );
+		}
+
+		// Create the block directory.
+		if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) {
+			$base_writable = is_dir( BF_GENERATED_DIR ) && wp_is_writable( BF_GENERATED_DIR );
+
+			return new WP_Error(
+				'bf_fs_error',
+				sprintf(
+					/* translators: 1: target directory, 2: writability detail */
+					__( 'Could not create block directory (%1$s). The generated-blocks folder %2$s. If you are running WP Playground or another mounted dev server, restart it so it re-mounts the plugin files.', 'block-foundry' ),
+					$dir,
+					$base_writable ? __( 'exists and is writable, so the deploy path may be stale', 'block-foundry' ) : __( 'is missing or not writable', 'block-foundry' )
+				),
+				array( 'status' => 500 )
+			);
 		}
 
 		// Write each file.
